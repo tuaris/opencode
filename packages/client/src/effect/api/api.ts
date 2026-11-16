@@ -2526,19 +2526,6 @@ export type ExperimentalJobListOperation<E = never> = (
   input?: ExperimentalJobListInput,
 ) => Effect.Effect<ExperimentalJobListOutput, E>
 
-export type ExperimentalSessionSearchStatusOutput =
-  | { readonly status: "disabled" }
-  | {
-      readonly status: "running" | "paused"
-      readonly progress: { readonly label: string; readonly numerator: number; readonly denominator: number }
-    }
-  | { readonly status: "completed"; readonly skipped: number }
-  | { readonly status: "unsupported" | "error"; readonly error: string }
-export type ExperimentalSessionSearchStatusOperation<E = never> = () => Effect.Effect<
-  ExperimentalSessionSearchStatusOutput,
-  E
->
-
 export interface ExperimentalApi<E = never> {
   readonly persistentPty: {
     readonly read: ExperimentalPersistentPtyReadOperation<E>
@@ -2569,7 +2556,6 @@ export interface ExperimentalApi<E = never> {
     readonly delete: ExperimentalArtifactsDeleteOperation<E>
   }
   readonly job: { readonly list: ExperimentalJobListOperation<E> }
-  readonly sessionSearch: { readonly status: ExperimentalSessionSearchStatusOperation<E> }
 }
 
 export type ShellListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }

@@ -1,5 +1,4 @@
 import { PersistentPty } from "@opencode/core/persistent-pty"
-import { SessionSearchBuild } from "@opencode/core/session/search-build"
 import { PtyTicket } from "@opencode/core/pty/ticket"
 import {
   ForbiddenError,
@@ -33,10 +32,8 @@ export const PersistentPtyHandler = HttpApiBuilder.group(Api, "server.experiment
     const job = yield* makeJob
     const mediaGet = yield* makeMediaGet
     const schedule = yield* makeSchedule
-    const sessionSearch = yield* SessionSearchBuild.Service
 
     return handlers
-      .handle("sessionSearch.status", () => sessionSearch.status)
       .handleRaw("media.get", (ctx) => mediaGet(ctx.params.hash, ctx.request))
       .handle("job.list", (ctx) => job.list(ctx.query))
       .handle("artifacts.providers", (ctx) => artifact.providers(ctx.query, ctx.request))

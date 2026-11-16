@@ -271,7 +271,6 @@ import type {
   ExperimentalArtifactsViewOutput,
   ExperimentalJobListInput,
   ExperimentalJobListOutput,
-  ExperimentalSessionSearchStatusOutput,
   ShellListInput,
   ShellListOutput,
   ShellCreateInput,
@@ -1702,19 +1701,6 @@ export function make(options: ClientOptions) {
             },
             requestOptions,
           ).then((value) => value.data),
-      },
-      sessionSearch: {
-        status: (requestOptions?: RequestOptions) =>
-          request<ExperimentalSessionSearchStatusOutput>(
-            {
-              method: "GET",
-              path: `/api/experimental/session-search`,
-              successStatus: 200,
-              declaredStatuses: [400, 401],
-              empty: false,
-            },
-            requestOptions,
-          ),
       },
       migration: {
         v1: {

@@ -5,18 +5,6 @@ import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Database } from "../database/database.js"
 import { SessionSearchIndex } from "./search-index.js"
 
-export interface Progress {
-  readonly label: string
-  readonly numerator: number
-  readonly denominator: number
-}
-
-export type Status =
-  | { readonly status: "disabled" }
-  | { readonly status: "running" | "paused"; readonly progress: Progress }
-  | { readonly status: "completed"; readonly skipped: number }
-  | { readonly status: "unsupported" | "error"; readonly error: string }
-
 export interface Interface {
   /**
    * Runs the one-time build of existing history whenever a location holds it, until it is done; triggers keep the
@@ -25,11 +13,10 @@ export interface Interface {
    */
   readonly run: Effect.Effect<never>
   /**
-   * Marks `experimental.sqlite_fts` on for the scope it runs in, as a location with the flag on does while it is
+   * Marks the `sqlite_fts` flag on for the scope it runs in, as a location with the flag on does while it is
    * loaded. The build runs while any location holds it and pauses, from its persisted cursor, when none does.
    */
   readonly hold: Effect.Effect<void, never, Scope.Scope>
-  readonly status: Effect.Effect<Status>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionSearchBuild") {}
@@ -50,8 +37,6 @@ export const layer = Layer.effect(
       holds: 0,
       // A failed build is retried once per process, and again each time the flag is turned off and on.
       retry: true,
-      building: false,
-      unsupported: undefined as string | undefined,
     }
 
     const build = Effect.gen(function* () {
@@ -100,30 +85,20 @@ export const layer = Layer.effect(
         yield* Effect.logWarning("session search skipped a row it could not index", { cause: exit.cause })
         yield* SessionSearchIndex.buildChunk(db, { limit: 1, skip: true })
       }
-    }).pipe(
-      Effect.ensuring(
-        Effect.sync(() => {
-          runtime.building = false
-        }),
-      ),
-    )
+    })
 
     const attempt = Effect.gen(function* () {
-      // Also reports an index whose triggers the startup check dropped as unsupported.
       const ensured = yield* SessionSearchIndex.ensure(db)
       if (ensured.status === "unsupported") {
-        runtime.unsupported = ensured.reason
         yield* Effect.logWarning("session search is not supported by this SQLite", { reason: ensured.reason })
         return
       }
-      runtime.unsupported = undefined
       if (ensured.status !== "ready" || ensured.state.status === "done") return
       if (ensured.state.status === "failed") {
         if (!runtime.retry) return
         yield* SessionSearchIndex.retry(db)
       }
       runtime.retry = false
-      runtime.building = true
       yield* build
     }).pipe(
       Effect.catchCauseIf(
@@ -161,24 +136,7 @@ export const layer = Layer.effect(
         }),
     )
 
-    const status = Effect.gen(function* () {
-      if (runtime.unsupported) return { status: "unsupported", error: runtime.unsupported } satisfies Status
-      const state = yield* SessionSearchIndex.state(db)
-      if (!SessionSearchIndex.current(state)) return { status: "disabled" } satisfies Status
-      if (state.status === "done") return { status: "completed", skipped: state.skipped } satisfies Status
-      if (state.status === "failed")
-        return { status: "error", error: state.error ?? "The session search build failed" } satisfies Status
-      return {
-        status: runtime.building ? "running" : "paused",
-        progress: {
-          label: "Indexing session history",
-          numerator: state.processed,
-          denominator: Math.max(state.total, state.processed),
-        },
-      } satisfies Status
-    })
-
-    return Service.of({ run, hold, status })
+    return Service.of({ run, hold })
   }),
 )
 

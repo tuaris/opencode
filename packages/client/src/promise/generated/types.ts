@@ -4763,12 +4763,6 @@ export type ExperimentalJobListInput = {
 
 export type ExperimentalJobListOutput = { data: Array<JobInfo> }["data"]
 
-export type ExperimentalSessionSearchStatusOutput =
-  | { status: "disabled" }
-  | { status: "running" | "paused"; progress: { label: string; numerator: number; denominator: number } }
-  | { status: "completed"; skipped: number }
-  | { status: "unsupported" | "error"; error: string }
-
 export type ShellListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }
 
 export type ShellListOutput = { location: LocationPublicRef; data: Array<ShellInfo1> }

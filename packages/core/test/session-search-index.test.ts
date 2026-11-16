@@ -15,7 +15,6 @@ import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionSearchIndex } from "@opencode/core/session/search-index"
-import { SessionSearchQuery } from "@opencode/core/session/search-query"
 import { SessionMessageTable, SessionPartTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionID } from "@opencode/schema/session-id"
 import { Skill } from "@opencode/schema/skill"
@@ -146,10 +145,20 @@ const writeState = (db: Db, state: Partial<SessionSearchIndex.State>) =>
       .run()
   })
 
+/** Sources matching any word of `query`. */
 const find = (db: Db, query: string) =>
-  SessionSearchQuery.search(db, { query }).pipe(
-    Effect.map((hits) => hits.map((hit) => hit.messageID ?? hit.sessionID).toSorted()),
-  )
+  db
+    .all<{ source: string }>(
+      sql`
+      SELECT document.source_id AS source
+      FROM session_search JOIN session_search_document AS document ON document.id = session_search.rowid
+      WHERE session_search MATCH ${query
+        .split(" ")
+        .map((word) => `"${word}"`)
+        .join(" OR ")}
+    `,
+    )
+    .pipe(Effect.map((rows) => rows.map((row) => row.source).toSorted()))
 
 /** Sources with an index entry. */
 const documents = (db: Db) =>
@@ -515,12 +524,6 @@ describe("SessionSearchIndex", () => {
       yield* build(db)
       yield* addMessages(db, sessionA, [user("4", "restored prompt")], 4)
       expect(yield* find(db, "restored")).toEqual([id("4")])
-
-      // A source deleted while the triggers were off keeps its entry, but search leaves it out.
-      yield* SessionSearchIndex.detach(db)
-      yield* db.run(sql`DELETE FROM session_message WHERE id = ${id("4")}`)
-      yield* SessionSearchIndex.check(db)
-      expect(yield* find(db, "restored")).toEqual([])
     }),
   )
 

@@ -11,7 +11,6 @@ import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionSearchBuild } from "@opencode/core/session/search-build"
 import { SessionSearchIndex } from "@opencode/core/session/search-index"
-import { SessionSearchQuery } from "@opencode/core/session/search-query"
 import { SessionTable } from "@opencode/core/session/sql"
 import { testEffect } from "./lib/effect"
 
@@ -59,13 +58,24 @@ const until = (condition: Effect.Effect<boolean>) =>
       yield* step
     }
   })
-const settled = (build: SessionSearchBuild.Interface, status: SessionSearchBuild.Status["status"]) =>
-  until(build.status.pipe(Effect.map((current) => current.status === status)))
-
-const titles = (db: Database.Interface["db"], query: string) =>
-  SessionSearchQuery.search(db, { query }).pipe(
-    Effect.map((hits) => hits.map((hit): string => hit.sessionID).toSorted()),
+const settled = (db: Database.Interface["db"], status: SessionSearchIndex.State["status"]) =>
+  until(
+    SessionSearchIndex.state(db).pipe(
+      Effect.map((state) => state !== undefined && "status" in state && state.status === status),
+    ),
   )
+
+/** Sessions whose title matches `word`. */
+const titles = (db: Database.Interface["db"], word: string) =>
+  db
+    .all<{ source: string }>(
+      sql`
+      SELECT document.source_id AS source
+      FROM session_search JOIN session_search_document AS document ON document.id = session_search.rowid
+      WHERE session_search MATCH ${word}
+    `,
+    )
+    .pipe(Effect.map((rows) => rows.map((row) => row.source).toSorted()))
 
 const objects = (db: Database.Interface["db"]) =>
   db.all(sql`SELECT name FROM sqlite_master WHERE name GLOB 'session_search*'`).pipe(Effect.map((rows) => rows.length))
@@ -78,10 +88,10 @@ const failOn = (db: Database.Interface["db"], ids: string) =>
 describe("SessionSearchBuild", () => {
   it.effect("does nothing until held", () =>
     Effect.gen(function* () {
-      const { db, build } = yield* setup
+      const { db } = yield* setup
       yield* elapse
       expect(yield* objects(db)).toBe(0)
-      expect(yield* build.status).toEqual({ status: "disabled" })
+      expect(yield* SessionSearchIndex.state(db)).toBeUndefined()
     }),
   )
 
@@ -90,9 +100,9 @@ describe("SessionSearchBuild", () => {
       const { db, insert, build } = yield* setup
       const first = yield* hold(build)
       const second = yield* hold(build)
-      yield* settled(build, "completed")
+      yield* settled(db, "done")
       expect(yield* titles(db, "walrus")).toEqual(["ses_a", "ses_b", "ses_c"])
-      expect(yield* build.status).toEqual({ status: "completed", skipped: 0 })
+      expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "done", skipped: 0 })
 
       // Off stops nothing: the triggers maintain the index without the build.
       yield* release(first)
@@ -108,9 +118,9 @@ describe("SessionSearchBuild", () => {
       yield* SessionSearchIndex.ensure(db)
       yield* failOn(db, "'ses_b'")
       const flaky = yield* hold(build)
-      yield* settled(build, "completed")
+      yield* settled(db, "done")
       expect(yield* titles(db, "walrus")).toEqual(["ses_a", "ses_c"])
-      expect(yield* build.status).toEqual({ status: "completed", skipped: 1 })
+      expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "done", skipped: 1 })
       yield* release(flaky)
 
       // Built again from the start, every row fails, so the build stops and records why.
@@ -121,17 +131,17 @@ describe("SessionSearchBuild", () => {
         WHERE key = 'session.search'
       `)
       const again = yield* hold(build)
-      yield* settled(build, "error")
+      yield* settled(db, "failed")
       expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "failed" })
 
       // Still held, it is not retried; released and held again, it is.
       yield* db.run("DROP TRIGGER fail_queue")
       yield* elapse
-      expect(yield* build.status).toMatchObject({ status: "error" })
+      expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "failed" })
       yield* release(again)
       const retried = yield* hold(build)
-      yield* settled(build, "completed")
-      expect(yield* build.status).toEqual({ status: "completed", skipped: 0 })
+      yield* settled(db, "done")
+      expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "done", skipped: 0 })
       expect(yield* titles(db, "walrus")).toEqual(["ses_a", "ses_b", "ses_c"])
       yield* release(retried)
     }),
@@ -154,9 +164,9 @@ describe("SessionSearchBuild", () => {
       yield* SessionSearchIndex.ensure(db)
       yield* SessionSearchIndex.buildChunk(db, { limit: 1 })
       yield* SessionSearchIndex.fail(db, "disk full")
-      expect(yield* build.status).toMatchObject({ status: "error", error: "disk full" })
+      expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "failed", error: "disk full" })
       const held = yield* hold(build)
-      yield* settled(build, "completed")
+      yield* settled(db, "done")
       expect(yield* titles(db, "walrus")).toEqual(["ses_a", "ses_b", "ses_c"])
       yield* release(held)
     }),
@@ -164,15 +174,15 @@ describe("SessionSearchBuild", () => {
 
   it.effect("resumes when held again right after a release", () =>
     Effect.gen(function* () {
-      const { build } = yield* setup
+      const { db, build } = yield* setup
       const first = yield* hold(build)
       // Real macrotasks only: the build runs its first chunk and waits on the test clock between chunks.
       const tick = Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1)))
       yield* Effect.repeat(tick, { times: 5 })
-      expect((yield* build.status).status).toBe("running")
+      expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "building" })
       yield* release(first)
       const second = yield* hold(build)
-      yield* settled(build, "completed")
+      yield* settled(db, "done")
       yield* release(second)
     }),
   )
@@ -182,12 +192,9 @@ describe("SessionSearchBuild", () => {
       const { db, build } = yield* setup
       yield* SessionSearchIndex.ensure(db)
       expect(yield* SessionSearchIndex.buildChunk(db, { limit: 1 })).toEqual({ done: false })
-      expect(yield* build.status).toEqual({
-        status: "paused",
-        progress: { label: "Indexing session history", numerator: 1, denominator: 3 },
-      })
+      expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "building", processed: 1, total: 3 })
       const resumed = yield* hold(build)
-      yield* settled(build, "completed")
+      yield* settled(db, "done")
       expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "done", processed: 3, total: 3 })
       yield* release(resumed)
     }),
