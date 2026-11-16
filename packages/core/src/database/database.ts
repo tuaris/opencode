@@ -25,14 +25,18 @@ export type Options = typeof Options.Type
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/storage/Database") {}
 
-const checks: Array<(db: DatabaseShape) => Effect.Effect<void>> = []
+export interface MigrationHook {
+  /** Runs before the first pending migration, if any is pending. */
+  readonly before: (db: DatabaseShape) => Effect.Effect<void>
+  /** Runs every time a database opens, after migrations and before anything writes. */
+  readonly after: (db: DatabaseShape) => Effect.Effect<void>
+}
 
-/**
- * Runs `check` after migrations, before anything writes, each time a database is opened. Register at module load:
- * a database opened earlier skips it.
- */
-export function afterMigrate(check: (db: DatabaseShape) => Effect.Effect<void>) {
-  checks.push(check)
+const hooks: Array<MigrationHook> = []
+
+/** Register at module load: a database opened earlier skips the hook. */
+export function onMigrate(hook: MigrationHook) {
+  hooks.push(hook)
 }
 
 // The bootstrap lock is scoped to the database being built, never to this
@@ -61,9 +65,10 @@ const databaseLayer = (lock: Effect.Effect<Semaphore.Semaphore>, legacyCredentia
       if (supportsForeignKeyToggle && !durableObject) yield* db.run("PRAGMA foreign_keys = ON")
       const semaphore = yield* lock
       yield* semaphore.withPermit(
-        DatabaseMigration.apply(db, { legacyCredentials }).pipe(
-          Effect.andThen(Effect.forEach(checks, (check) => check(db), { discard: true })),
-        ),
+        DatabaseMigration.apply(db, {
+          legacyCredentials,
+          beforePending: Effect.forEach(hooks, (hook) => hook.before(db), { discard: true }),
+        }).pipe(Effect.andThen(Effect.forEach(hooks, (hook) => hook.after(db), { discard: true }))),
       )
 
       return { db }

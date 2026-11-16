@@ -444,11 +444,13 @@ describe("SessionSearchIndex", () => {
     }),
   )
 
-  it.effect("keeps its triggers across every migration since the index exists", () =>
+  it.effect("survives every migration since the index exists, including ones that rebuild a source table", () =>
     Effect.gen(function* () {
       // The index needs session_part, so it can exist from that migration on; every later one runs over it.
       const first = migrations.findIndex((migration) => migration.id.endsWith("_session_part")) + 1
       const db = yield* database((db) => DatabaseMigration.applyOnly(db, migrations.slice(0, first)))
+      // macOS's SQLite turns this on. Elsewhere, renaming a table rechecks every view and trigger.
+      yield* db.run("PRAGMA legacy_alter_table = OFF")
       // Columns as of that migration.
       yield* db.run(sql`
         INSERT INTO session_v2 (id, project_id, slug, directory, title, version, time_created, time_updated)
@@ -459,19 +461,46 @@ describe("SessionSearchIndex", () => {
         VALUES (${id("1")}, ${sessionA}, 'user', 1, 1, 1, ${JSON.stringify({ text: "migrated prompt", time: { created: 1 } })})
       `)
       yield* index(db)
-      yield* DatabaseMigration.applyOnly(db, migrations)
-      expect(yield* SessionSearchIndex.check(db)).toMatchObject({ status: "ready", state: { status: "done" } })
+      const migrate = (input: DatabaseMigration.Migration[]) =>
+        DatabaseMigration.applyOnly(db, input, { beforePending: SessionSearchIndex.detach(db) })
+      yield* migrate(migrations)
+      expect(yield* SessionSearchIndex.check(db)).toMatchObject({ status: "ready" })
+      yield* build(db)
+      expect(yield* find(db, "migrated")).toEqual([id("1"), sessionA])
 
-      // A migration that rebuilds a source table drops its triggers; check restores them and rebuilds.
-      yield* db.run("PRAGMA foreign_keys = OFF")
-      yield* db.run("CREATE TABLE __new_session_message AS SELECT * FROM session_message")
-      yield* db.run("DROP TABLE session_message")
-      yield* db.run("ALTER TABLE __new_session_message RENAME TO session_message")
+      // Rebuilt the way Drizzle does it: copy, drop, rename. The rename fails while the index refers to the table.
+      const rebuild: DatabaseMigration.Migration = {
+        id: "29990101000000_rebuild_session_message",
+        foreignKeys: false,
+        up: (tx) =>
+          Effect.gen(function* () {
+            const table = yield* tx.get<{ sql: string }>(
+              "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'session_message'",
+            )
+            yield* tx.run((table?.sql ?? "").replace(/"?session_message"?/, "__new_session_message"))
+            yield* tx.run("INSERT INTO __new_session_message SELECT * FROM session_message")
+            yield* tx.run("DROP TABLE session_message")
+            yield* tx.run("ALTER TABLE __new_session_message RENAME TO session_message")
+          }),
+      }
+      expect(Exit.isFailure(yield* Effect.exit(DatabaseMigration.applyOnly(db, [rebuild])))).toBe(true)
+      yield* migrate([rebuild])
+      // Before the check: no triggers, so nothing queues this.
       yield* addMessages(db, sessionA, [user("2", "unqueued prompt")], 2)
       expect(yield* SessionSearchIndex.check(db)).toMatchObject({ status: "ready", state: { status: "building" } })
+      // The entries are kept while the build walks every source again.
+      expect(yield* find(db, "migrated")).toEqual([id("1"), sessionA])
       yield* build(db)
       yield* addMessages(db, sessionA, [user("3", "queued prompt")], 3)
       expect(yield* find(db, "migrated unqueued queued")).toEqual([id("1"), id("2"), id("3"), sessionA])
+
+      // A migration that leaves the source tables alone gets the triggers back without another walk.
+      yield* migrate([
+        { id: "29990102000000_unrelated", up: (tx) => tx.run("CREATE TABLE unrelated (id TEXT)").pipe(Effect.asVoid) },
+      ])
+      expect(yield* SessionSearchIndex.check(db)).toMatchObject({ status: "ready", state: { status: "done" } })
+      yield* addMessages(db, sessionA, [user("4", "restored prompt")], 4)
+      expect(yield* find(db, "restored")).toEqual([id("4")])
     }),
   )
 

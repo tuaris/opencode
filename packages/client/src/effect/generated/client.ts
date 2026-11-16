@@ -269,6 +269,7 @@ import type {
   ExperimentalArtifactsDeleteOutput,
   ExperimentalJobListInput,
   ExperimentalJobListOutput,
+  ExperimentalSessionSearchStatusOutput,
   ShellListInput,
   ShellListOutput,
   ShellCreateInput,
@@ -307,7 +308,6 @@ import type {
   DebugLocationEvictInput,
   DebugLocationEvictOutput,
   ExperimentalMigrationV1StatusOutput,
-  ExperimentalMigrationSessionSearchStatusOutput,
   WebsearchProvidersInput,
   WebsearchProvidersOutput,
   WebsearchQueryInput,
@@ -1716,6 +1716,11 @@ const EndpointExperimentalJobList = (raw: RawClient["server.experimental"]) => (
     ),
   )
 
+const EndpointExperimentalSessionSearchStatus = (raw: RawClient["server.experimental"]) => () =>
+  preserveEffect<ExperimentalSessionSearchStatusOutput>()(
+    raw["sessionSearch.status"]({}).pipe(Effect.mapError(mapClientError)),
+  )
+
 const adaptGroupExperimental = (raw: RawClient["server.experimental"]) => ({
   persistentPty: {
     read: EndpointExperimentalPersistentPtyRead(raw),
@@ -1746,6 +1751,7 @@ const adaptGroupExperimental = (raw: RawClient["server.experimental"]) => ({
     delete: EndpointExperimentalArtifactsDelete(raw),
   },
   job: { list: EndpointExperimentalJobList(raw) },
+  sessionSearch: { status: EndpointExperimentalSessionSearchStatus(raw) },
 })
 
 const EndpointShellList = (raw: RawClient["server.shell"]) => (input?: ShellListInput) =>
@@ -1909,14 +1915,8 @@ const EndpointExperimentalMigrationV1Status = (raw: RawClient["server.migration"
     raw["migration.v1.status"]({}).pipe(Effect.mapError(mapClientError)),
   )
 
-const EndpointExperimentalMigrationSessionSearchStatus = (raw: RawClient["server.migration"]) => () =>
-  preserveEffect<ExperimentalMigrationSessionSearchStatusOutput>()(
-    raw["migration.sessionSearch.status"]({}).pipe(Effect.mapError(mapClientError)),
-  )
-
 const adaptGroupExperimentalMigration = (raw: RawClient["server.migration"]) => ({
   v1: { status: EndpointExperimentalMigrationV1Status(raw) },
-  sessionSearch: { status: EndpointExperimentalMigrationSessionSearchStatus(raw) },
 })
 
 const EndpointWebsearchProviders = (raw: RawClient["server.websearch"]) => (input?: WebsearchProvidersInput) =>
@@ -2092,11 +2092,6 @@ const adaptClient = (raw: RawClient) => {
       v1: {
         /** @deprecated Use `client.experimental.migration.v1.status`. Removed in the next minor. */
         status: client.experimental.migration.v1.status,
-      },
-      /** @deprecated Use `client.experimental.migration.sessionSearch`. Removed in the next minor. */
-      sessionSearch: {
-        /** @deprecated Use `client.experimental.migration.sessionSearch.status`. Removed in the next minor. */
-        status: client.experimental.migration.sessionSearch.status,
       },
     },
     /** @deprecated Use `client.experimental.usage`. Removed in the next minor. */

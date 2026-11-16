@@ -271,6 +271,7 @@ import type {
   ExperimentalArtifactsViewOutput,
   ExperimentalJobListInput,
   ExperimentalJobListOutput,
+  ExperimentalSessionSearchStatusOutput,
   ShellListInput,
   ShellListOutput,
   ShellCreateInput,
@@ -309,7 +310,6 @@ import type {
   DebugLocationEvictInput,
   DebugLocationEvictOutput,
   ExperimentalMigrationV1StatusOutput,
-  ExperimentalMigrationSessionSearchStatusOutput,
   WebsearchProvidersInput,
   WebsearchProvidersOutput,
   WebsearchQueryInput,
@@ -1703,6 +1703,19 @@ export function make(options: ClientOptions) {
             requestOptions,
           ).then((value) => value.data),
       },
+      sessionSearch: {
+        status: (requestOptions?: RequestOptions) =>
+          request<ExperimentalSessionSearchStatusOutput>(
+            {
+              method: "GET",
+              path: `/api/experimental/session-search`,
+              successStatus: 200,
+              declaredStatuses: [400, 401],
+              empty: false,
+            },
+            requestOptions,
+          ),
+      },
       migration: {
         v1: {
           status: (requestOptions?: RequestOptions) =>
@@ -1710,19 +1723,6 @@ export function make(options: ClientOptions) {
               {
                 method: "GET",
                 path: `/api/experimental/migration/v1`,
-                successStatus: 200,
-                declaredStatuses: [400, 401],
-                empty: false,
-              },
-              requestOptions,
-            ),
-        },
-        sessionSearch: {
-          status: (requestOptions?: RequestOptions) =>
-            request<ExperimentalMigrationSessionSearchStatusOutput>(
-              {
-                method: "GET",
-                path: `/api/experimental/migration/session-search`,
                 successStatus: 200,
                 declaredStatuses: [400, 401],
                 empty: false,
@@ -2787,11 +2787,6 @@ export function make(options: ClientOptions) {
       v1: {
         /** @deprecated Use `client.experimental.migration.v1.status`. Removed in the next minor. */
         status: client.experimental.migration.v1.status,
-      },
-      /** @deprecated Use `client.experimental.migration.sessionSearch`. Removed in the next minor. */
-      sessionSearch: {
-        /** @deprecated Use `client.experimental.migration.sessionSearch.status`. Removed in the next minor. */
-        status: client.experimental.migration.sessionSearch.status,
       },
     },
     /** @deprecated Use `client.experimental.usage`. Removed in the next minor. */

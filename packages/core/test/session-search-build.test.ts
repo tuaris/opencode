@@ -148,6 +148,21 @@ describe("SessionSearchBuild", () => {
     }),
   )
 
+  it.effect("resumes when held again right after a release", () =>
+    Effect.gen(function* () {
+      const { build } = yield* setup
+      const first = yield* hold(build)
+      // Real macrotasks only: the build runs its first chunk and waits on the test clock between chunks.
+      const tick = Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1)))
+      yield* Effect.repeat(tick, { times: 5 })
+      expect((yield* build.status).status).toBe("running")
+      yield* release(first)
+      const second = yield* hold(build)
+      yield* settled(build, "completed")
+      yield* release(second)
+    }),
+  )
+
   it.effect("pauses when released and resumes from its cursor", () =>
     Effect.gen(function* () {
       const { db, build } = yield* setup

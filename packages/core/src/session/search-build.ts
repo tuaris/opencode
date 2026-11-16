@@ -134,11 +134,16 @@ export const layer = Layer.effect(
       ),
     )
 
-    // Each time a location holds it, attempt the build, interrupted between transactions once none does.
+    // Each time a location holds it, attempt the build, interrupted between transactions once none does. An attempt
+    // that ends while still held waits for a release; one that a release ended goes straight back to waiting for a
+    // hold, which may already have come.
     const run = Effect.gen(function* () {
       yield* wanted.await
-      yield* attempt.pipe(Effect.raceFirst(released.await))
-      yield* released.await
+      const ended = yield* attempt.pipe(
+        Effect.as("attempted" as const),
+        Effect.raceFirst(released.await.pipe(Effect.as("released" as const))),
+      )
+      if (ended === "attempted") yield* released.await
     }).pipe(Effect.forever)
 
     const hold = Effect.acquireRelease(

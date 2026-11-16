@@ -66,11 +66,11 @@ export type Ensured =
   | { readonly status: "ready"; readonly state: State }
 
 /**
- * Runs before anything writes, so it must stay cheap when there is no index: one sqlite_master read. If search
- * triggers exist but this SQLite can't run them (a database moved to an older SQLite), they would fail every session
- * write, so they are dropped and search stays off here. If a migration rebuilt a source table, its triggers went with
- * it and changes since were missed, so the index is rebuilt from scratch. An older version's index is left to
- * {@link ensure}.
+ * Runs after migrations, before anything writes, so it must stay cheap when there is no index: one sqlite_master read.
+ * If search triggers exist but this SQLite can't run them (a database moved to an older SQLite), they would fail every
+ * session write, so they are dropped and search stays off here. A view or trigger that {@link detach} dropped, or that
+ * went with a rebuilt source table, is recreated; if a source table was rebuilt, the build walks every source again,
+ * replacing entries while search keeps working. An older version's index is left to {@link ensure}.
  */
 export const check = Effect.fn("SessionSearchIndex.check")(function* (db: DatabaseService) {
   const result = yield* prepare(db, false)
@@ -81,9 +81,28 @@ export const check = Effect.fn("SessionSearchIndex.check")(function* (db: Databa
   return result
 })
 
-Database.afterMigrate((db) =>
-  check(db).pipe(Effect.ignoreCause({ log: "Error", message: "session search check failed" })),
-)
+/**
+ * Migrations rebuild a table by creating a copy, dropping the original and renaming the copy. Since SQLite 3.26 that
+ * rename fails while any view or trigger refers to the dropped table (macOS's SQLite turns legacy_alter_table on, which
+ * skips the check), and OpenCode would not start. So before pending migrations run, the view and every search trigger
+ * are dropped, and {@link check} recreates them afterwards. Where the source tables are stored is noted first, so a
+ * table rebuilt meanwhile is detected. Sessions written by another process in between are not indexed.
+ */
+export const detach = Effect.fn("SessionSearchIndex.detach")(function* (db: DatabaseService) {
+  const objects = yield* db
+    .all<{
+      name: string
+    }>(sql`SELECT name FROM sqlite_master WHERE name GLOB 'session_search*' AND type IN ('view', 'trigger')`)
+    .pipe(Effect.orDie)
+  if (objects.length === 0) return
+  detached.set(db, yield* sourcePages(db))
+  yield* immediate(db, unlink(db))
+})
+
+Database.onMigrate({
+  before: (db) => detach(db).pipe(Effect.ignoreCause({ log: "Error", message: "session search detach failed" })),
+  after: (db) => check(db).pipe(Effect.ignoreCause({ log: "Error", message: "session search check failed" })),
+})
 
 /**
  * Creates the index and its triggers, or recreates them when the version is older or an object is gone, and starts a
@@ -300,6 +319,8 @@ const expected = (layout: Layout) => [
 ]
 
 const prepare = Effect.fnUntraced(function* (db: DatabaseService, create: boolean) {
+  const pages = detached.get(db)
+  detached.delete(db)
   const objects = yield* db
     .all<{
       name: string
@@ -324,6 +345,8 @@ const prepare = Effect.fnUntraced(function* (db: DatabaseService, create: boolea
   if (current(before) && expected(before.layout).every((name) => names.has(name)))
     return { status: "ready", state: before } as const
   if (!create && !current(before)) return { status: "absent" } as const
+  if (current(before) && Tables.every((name) => names.has(name)))
+    return yield* restore(db, before.layout, pages === undefined || pages !== (yield* sourcePages(db)))
   // An index this version built keeps its layout while this SQLite can still create it.
   const kept = current(before) && (yield* creatable(db, before.layout)) === undefined ? before.layout : undefined
   const layout = kept ?? (yield* pick(db))
@@ -357,22 +380,76 @@ const prepare = Effect.fnUntraced(function* (db: DatabaseService, create: boolea
   )
 })
 
-const reset = Effect.fnUntraced(function* (db: DatabaseService, layout: Layout) {
-  const triggers = yield* db.all<{ name: string }>(
-    sql`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'session_search*'`,
+/**
+ * The tables survived but the view or triggers are gone: recreates them and keeps the entries. When a source table may
+ * have changed unseen, the build walks every source again.
+ */
+const restore = (db: DatabaseService, layout: Layout, rewalk: boolean) =>
+  immediate(
+    db,
+    Effect.gen(function* () {
+      // Another server may have restored or rebuilt it meanwhile.
+      const state = yield* readState(db)
+      if (state && state.version > Version) return { status: "newer" } as const
+      if (!current(state) || state.layout !== layout) return { status: "absent" } as const
+      yield* unlink(db)
+      yield* link(db, layout)
+      if (!rewalk) return { status: "ready", state } as const
+      const next: State = {
+        ...state,
+        status: "building",
+        phase: "titles",
+        after: undefined,
+        processed: 0,
+        total: yield* total(db),
+        skipped: 0,
+        error: undefined,
+      }
+      yield* writeState(db, next)
+      return { status: "ready", state: next } as const
+    }),
   )
-  for (const row of triggers) yield* db.run(`DROP TRIGGER ${row.name}`)
-  yield* db.run("DROP VIEW IF EXISTS session_search_source")
+
+const reset = Effect.fnUntraced(function* (db: DatabaseService, layout: Layout) {
+  yield* unlink(db)
   // Includes the earlier draft's tables.
   for (const name of [...Tables, "session_search_text", "session_search_dirty"])
     yield* db.run(`DROP TABLE IF EXISTS ${name}`)
   yield* db.run("CREATE TABLE session_search_queue (source_id TEXT PRIMARY KEY)")
   yield* db.run(Layouts[layout].document)
   yield* db.run(fts("session_search", layout))
+  yield* link(db, layout)
+})
+
+/** Drops the view and every search trigger. */
+const unlink = Effect.fnUntraced(function* (db: DatabaseService) {
+  const triggers = yield* db.all<{ name: string }>(
+    sql`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'session_search*'`,
+  )
+  for (const row of triggers) yield* db.run(`DROP TRIGGER ${row.name}`)
+  yield* db.run("DROP VIEW IF EXISTS session_search_source")
+})
+
+const link = Effect.fnUntraced(function* (db: DatabaseService, layout: Layout) {
   yield* db.run(SourceView)
   for (const [name, body] of Object.entries({ ...Layouts[layout].triggers, ...SourceTriggers }))
     yield* db.run(`CREATE TRIGGER ${name} ${body}`)
 })
+
+/** Where each source table is stored; a rebuilt table gets a new root page. */
+const sourcePages = (db: DatabaseService) =>
+  db
+    .all<{
+      name: string
+      rootpage: number
+    }>(sql`SELECT name, rootpage FROM sqlite_master WHERE type = 'table' AND name IN ('session_v2', 'session_message', 'session_part') ORDER BY name`)
+    .pipe(
+      Effect.map((rows) => JSON.stringify(rows)),
+      Effect.orDie,
+    )
+
+/** Source table pages {@link detach} noted for the {@link check} after migrations, per connection. */
+const detached = new WeakMap<DatabaseService, string>()
 
 const total = (db: DatabaseService) =>
   db
