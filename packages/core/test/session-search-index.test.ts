@@ -527,6 +527,21 @@ describe("SessionSearchIndex", () => {
     }),
   )
 
+  it.effect("folds accents and letters like đ, ł and ß, as ASCII folding does", () =>
+    Effect.gen(function* () {
+      const db = yield* database()
+      yield* addSession(db, sessionA, "Hóa đơn tháng này")
+      yield* addMessages(db, sessionA, [user("1", "Łódź Straße Ærø Œuvre Þór")])
+      yield* index(db)
+      expect(yield* find(db, "hoa don")).toEqual([sessionA])
+      expect(yield* find(db, "lodz")).toEqual([id("1")])
+      expect(yield* find(db, "strasse")).toEqual([id("1")])
+      expect(yield* find(db, "aero")).toEqual([id("1")])
+      expect(yield* find(db, "oeuvre")).toEqual([id("1")])
+      expect(yield* find(db, "thor")).toEqual([id("1")])
+    }),
+  )
+
   it.effect("matches any word, and indexes only the start of long text", () =>
     Effect.gen(function* () {
       const filler = "lorem ".repeat(SessionSearchIndex.MaxText / 6)

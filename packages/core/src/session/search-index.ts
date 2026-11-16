@@ -19,7 +19,7 @@ import { SessionMessage } from "./message.js"
 type DatabaseService = Database.Interface["db"]
 
 /** Bump when the columns, tokenizer, triggers or extracted text change, so {@link ensure} rebuilds. */
-export const Version = 1
+export const Version = 2
 
 export type Layout = "compact" | "text"
 
@@ -211,12 +211,41 @@ const Indexed = Object.entries(MessageTypes)
   .join(", ")
 
 /**
+ * Letters the tokenizer's remove_diacritics leaves alone because they aren't a base letter plus a mark, as in Lucene's
+ * ASCII folding: "hóa đơn" is indexed as "hoa don". A search has to fold its words the same way.
+ */
+const Folds = [
+  ["đ", "d"],
+  ["Đ", "D"],
+  ["ð", "d"],
+  ["Ð", "D"],
+  ["ł", "l"],
+  ["Ł", "L"],
+  ["ø", "o"],
+  ["Ø", "O"],
+  ["ħ", "h"],
+  ["Ħ", "H"],
+  ["ı", "i"],
+  ["ŋ", "n"],
+  ["Ŋ", "N"],
+  ["ß", "ss"],
+  ["æ", "ae"],
+  ["Æ", "AE"],
+  ["œ", "oe"],
+  ["Œ", "OE"],
+  ["þ", "th"],
+  ["Þ", "TH"],
+]
+const fold = (column: string) =>
+  `${Folds.reduce((text, [from, to]) => `replace(${text}, '${from}', '${to}')`, column)} AS ${column}`
+
+/**
  * One row per title or message with text to index: user text, a finished assistant's text (part rows, then inline
  * content), a completed compaction's summary. Rows that are not JSON objects are passed rather than failing the write
  * that queued them; each column keeps its first {@link MaxText} characters.
  */
 const SourceView = `CREATE VIEW session_search_source AS
-SELECT * FROM (
+SELECT source_id, session_id, ${fold("title")}, ${fold("summary")}, ${fold("user_text")}, ${fold("assistant_text")} FROM (
   SELECT id AS source_id, id AS session_id, substr(title, 1, ${MaxText}) AS title, NULL AS summary, NULL AS user_text, NULL AS assistant_text
   FROM session_v2 WHERE trim(coalesce(title, '')) <> ''
   UNION ALL
