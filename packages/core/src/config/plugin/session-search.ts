@@ -1,7 +1,7 @@
 export * as ConfigSessionSearchPlugin from "./session-search.js"
 
 import { define } from "@opencode/plugin/effect/plugin"
-import { Effect, Exit, Scope } from "effect"
+import { Effect, Exit, Scope, Semaphore } from "effect"
 import { Config } from "../../config.js"
 import { Flag } from "../../flag.js"
 import { SessionSearchBuild } from "../../session/search-build.js"
@@ -16,6 +16,8 @@ export const Plugin = define({
     const flags = yield* Flag.Service
     const scope = yield* Scope.Scope
     const held = { scope: undefined as Scope.Closeable | undefined }
+    // The first apply and a config change may overlap; one at a time takes at most one hold.
+    const serial = yield* Semaphore.make(1)
     const apply = Effect.gen(function* () {
       const on = flags.resolve(loaded.entries).sqlite_fts.enabled
       if (on && !held.scope) {
@@ -27,7 +29,7 @@ export const Plugin = define({
         yield* Scope.close(held.scope, Exit.void)
         held.scope = undefined
       }
-    })
+    }).pipe(serial.withPermit)
     const loaded = yield* ConfigEntryObserver.observe(
       config,
       ctx.event,

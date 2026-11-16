@@ -28,6 +28,9 @@ export const search = Effect.fn("SessionSearchQuery.search")(function* (
     SELECT document.session_id AS sessionID, document.source_id AS sourceID, bm25(session_search) AS score
     FROM session_search JOIN session_search_document AS document ON document.id = session_search.rowid
     WHERE session_search MATCH ${match}
+      -- Entries of sources deleted while the triggers were off (during migrations, or on an unsupported SQLite).
+      AND EXISTS (SELECT 1 FROM session_v2 WHERE id = document.session_id)
+      AND (document.source_id = document.session_id OR EXISTS (SELECT 1 FROM session_message WHERE id = document.source_id))
     ORDER BY score
     LIMIT ${input.limit ?? 20}
   `)

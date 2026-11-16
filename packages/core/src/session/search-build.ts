@@ -48,8 +48,8 @@ export const layer = Layer.effect(
     const released = yield* Latch.make(true)
     const runtime = {
       holds: 0,
-      // A failed build waits for the flag to be turned off and on again, or for a version that rebuilds it.
-      retry: false,
+      // A failed build is retried once per process, and again each time the flag is turned off and on.
+      retry: true,
       building: false,
       unsupported: undefined as string | undefined,
     }
@@ -109,22 +109,20 @@ export const layer = Layer.effect(
     )
 
     const attempt = Effect.gen(function* () {
-      const state = yield* SessionSearchIndex.state(db)
-      if (state && state.version > SessionSearchIndex.Version) return
-      const built = SessionSearchIndex.current(state) ? state : undefined
-      if (built?.status === "done") return
-      if (built?.status === "failed") {
-        if (!runtime.retry) return
-        yield* SessionSearchIndex.retry(db)
-      }
-      runtime.retry = false
+      // Also reports an index whose triggers the startup check dropped as unsupported.
       const ensured = yield* SessionSearchIndex.ensure(db)
       if (ensured.status === "unsupported") {
         runtime.unsupported = ensured.reason
         yield* Effect.logWarning("session search is not supported by this SQLite", { reason: ensured.reason })
         return
       }
-      if (ensured.status !== "ready") return
+      runtime.unsupported = undefined
+      if (ensured.status !== "ready" || ensured.state.status === "done") return
+      if (ensured.state.status === "failed") {
+        if (!runtime.retry) return
+        yield* SessionSearchIndex.retry(db)
+      }
+      runtime.retry = false
       runtime.building = true
       yield* build
     }).pipe(

@@ -148,6 +148,20 @@ describe("SessionSearchBuild", () => {
     }),
   )
 
+  it.effect("retries a build that failed before this process started, once", () =>
+    Effect.gen(function* () {
+      const { db, build } = yield* setup
+      yield* SessionSearchIndex.ensure(db)
+      yield* SessionSearchIndex.buildChunk(db, { limit: 1 })
+      yield* SessionSearchIndex.fail(db, "disk full")
+      expect(yield* build.status).toMatchObject({ status: "error", error: "disk full" })
+      const held = yield* hold(build)
+      yield* settled(build, "completed")
+      expect(yield* titles(db, "walrus")).toEqual(["ses_a", "ses_b", "ses_c"])
+      yield* release(held)
+    }),
+  )
+
   it.effect("resumes when held again right after a release", () =>
     Effect.gen(function* () {
       const { build } = yield* setup

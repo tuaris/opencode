@@ -494,13 +494,20 @@ describe("SessionSearchIndex", () => {
       yield* addMessages(db, sessionA, [user("3", "queued prompt")], 3)
       expect(yield* find(db, "migrated unqueued queued")).toEqual([id("1"), id("2"), id("3"), sessionA])
 
-      // A migration that leaves the source tables alone gets the triggers back without another walk.
+      // Any migration walks the sources again: a data-only one changes rows without the triggers seeing it.
       yield* migrate([
         { id: "29990102000000_unrelated", up: (tx) => tx.run("CREATE TABLE unrelated (id TEXT)").pipe(Effect.asVoid) },
       ])
-      expect(yield* SessionSearchIndex.check(db)).toMatchObject({ status: "ready", state: { status: "done" } })
+      expect(yield* SessionSearchIndex.check(db)).toMatchObject({ status: "ready", state: { status: "building" } })
+      yield* build(db)
       yield* addMessages(db, sessionA, [user("4", "restored prompt")], 4)
       expect(yield* find(db, "restored")).toEqual([id("4")])
+
+      // A source deleted while the triggers were off keeps its entry, but search leaves it out.
+      yield* SessionSearchIndex.detach(db)
+      yield* db.run(sql`DELETE FROM session_message WHERE id = ${id("4")}`)
+      yield* SessionSearchIndex.check(db)
+      expect(yield* find(db, "restored")).toEqual([])
     }),
   )
 
