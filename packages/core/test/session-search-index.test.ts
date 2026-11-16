@@ -444,6 +444,19 @@ describe("SessionSearchIndex", () => {
     }),
   )
 
+  it.effect("opening the database detaches the index before pending migrations and restores it after", () =>
+    Effect.gen(function* () {
+      const db = yield* database((db) => DatabaseMigration.applyOnly(db, migrations.slice(0, -1)))
+      yield* index(db)
+      expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "done" })
+
+      // The Database layer runs the newest migration, with the hooks search-index registers around it.
+      yield* Database.Service.pipe(Effect.provide(Database.layerFromClient))
+      expect(yield* triggers(db)).toBeGreaterThan(0)
+      expect(yield* SessionSearchIndex.state(db)).toMatchObject({ status: "building" })
+    }),
+  )
+
   it.effect("survives every migration since the index exists, including ones that rebuild a source table", () =>
     Effect.gen(function* () {
       // The index needs session_part, so it can exist from that migration on; every later one runs over it.
