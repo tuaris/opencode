@@ -446,8 +446,9 @@ fn bursty_output_does_not_disconnect_a_healthy_observer() {
 #[test]
 fn controller_switches_without_disconnecting_observers() {
     let service = TerminalService::new(64 * 1024);
+    // The child prints on the reclaim write and stays alive until the fallback write.
     let terminal = service
-        .create_pty(command("sleep 0.05; printf 'streamed\\n'; sleep 0.2"))
+        .create_pty(command("read -r line; printf 'streamed\\n'; read -r line"))
         .expect("terminal created");
     let controller = service
         .attach(
@@ -508,8 +509,6 @@ fn controller_switches_without_disconnecting_observers() {
         }
         false
     };
-    assert!(saw_output(&controller.events));
-    assert!(saw_output(&observer.events));
 
     let takeover = service
         .attach(
@@ -539,6 +538,8 @@ fn controller_switches_without_disconnecting_observers() {
             b"reclaimed\n".to_vec(),
         )
         .expect("former controller reclaims control and writes");
+    assert!(saw_output(&controller.events));
+    assert!(saw_output(&observer.events));
     assert!(
         service
             .write_for(
