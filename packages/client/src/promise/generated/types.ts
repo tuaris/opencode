@@ -2601,6 +2601,7 @@ export type ConfigEntry =
           mcp_events?: boolean
           full_codemode?: boolean
           part_rows?: boolean
+          sqlite_fts?: boolean
           image_generate?: boolean | { model?: string | { providerID: string; model: string; variant?: string } }
           subagent_depth?: number
           location_idle_timeout?: string | false
@@ -4884,6 +4885,12 @@ export type ExperimentalMigrationV1StatusOutput =
   | { status: "running"; progress: { label: string; numerator?: number | undefined; denominator?: number | undefined } }
   | { status: "error"; error: string }
 
+export type ExperimentalMigrationSessionSearchStatusOutput =
+  | { status: "disabled" }
+  | { status: "running" | "paused"; progress: { label: string; numerator: number; denominator: number } }
+  | { status: "completed"; skipped: number }
+  | { status: "unsupported" | "error"; error: string }
+
 export type WebsearchProvidersInput = { readonly location?: { readonly directory?: string | undefined } | undefined }
 
 export type WebsearchProvidersOutput = { location: LocationPublicRef; data: Array<WebSearchProvider> }
@@ -5052,6 +5059,9 @@ export type FileUnwatchOutput = ExperimentalFileUnwatchOutput
 
 /** @deprecated Use `ExperimentalMigrationV1StatusOutput`. Removed in the next minor. */
 export type MigrationV1StatusOutput = ExperimentalMigrationV1StatusOutput
+
+/** @deprecated Use `ExperimentalMigrationSessionSearchStatusOutput`. Removed in the next minor. */
+export type MigrationSessionSearchStatusOutput = ExperimentalMigrationSessionSearchStatusOutput
 
 /** @deprecated Use `ExperimentalUsageLimitsInput`. Removed in the next minor. */
 export type UsageLimitsInput = ExperimentalUsageLimitsInput
